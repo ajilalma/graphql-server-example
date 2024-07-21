@@ -1,6 +1,8 @@
-import { ApolloServer } from "@apollo/server";
-import { startStandaloneServer } from "@apollo/server/standalone";
+import { ApolloServer, BaseContext} from "@apollo/server";
+import Fastify from "fastify";
+import fastifyApollo, { fastifyApolloDrainPlugin, ApolloFastifyContextFunction } from "@as-integrations/fastify";
 import { addBook, getAuthor, getAuthorByName, getBooks, getBooksOfAuthor } from "./dal/data-manager.js";
+import { GraphQLError } from "graphql";
 
 // Schemas
 const typeDefs = `#graphql
@@ -50,27 +52,44 @@ const resolvers = {
     },
 
     Mutation: {
-        addBook: (parent, args, context, info) => addBook(args.book.title, args.book.authorName)
+        addBook: (parent, args, context, info) => {
+            if (context.token === "authorized") {
+                return addBook(args.book.title, args.book.authorName)
+            } else {
+                throw new GraphQLError("UNAUTHORIZED");
+            }
+        }
     }
 };
 
 // Define a useful context for your server
-interface AppContext {
+interface AppContext extends BaseContext {
     token: String
 }
+const contextFunction: ApolloFastifyContextFunction<AppContext> = async (request, reply) => {
+    return {
+        token: request.headers.authorization
+    }
+}
 
+const fastify = Fastify();
+console.log("Initiating the server");
 // Create appollo server instance
 const server = new ApolloServer<AppContext>({
     typeDefs,
-    resolvers
+    resolvers,
+    plugins: [fastifyApolloDrainPlugin(fastify)],
 });
 
-// Passing an ApolloServer instance to the `startStandaloneServer` function:
-//  1. creates an Express app
-//  2. installs your ApolloServer instance as middleware
-//  3. prepares your app to handle incoming requests
-const { url } = await startStandaloneServer(server, {
-    context: async ({ req }) => ({ token: req.headers.token as String }),
-    listen: { port: 8080}
+await server.start();
+await fastify.register(fastifyApollo(server), {
+    context: contextFunction
 });
-console.log(`Server running at ${url}`)
+try {
+    await fastify.listen({ port: 8080 })
+    const address = fastify.server.address();
+    console.log(`ADDRESS: ${JSON.stringify(address)}`);
+} catch (err) {
+    console.log(err)
+    process.exit(1)
+}
